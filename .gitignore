@@ -42,6 +42,8 @@ logs/
 # Data and models
 data/
 models/
+!/src/models
+!/src/data
 mlruns/
 mlartifacts/
 
