@@ -1,7 +1,7 @@
 """
-CIFAR-10 Dataset Module
+MNIST Dataset Module
 
-This module provides data loading and preprocessing functionality for the CIFAR-10 dataset.
+This module provides data loading and preprocessing functionality for the MNIST dataset.
 """
 
 import os
@@ -17,15 +17,15 @@ import structlog
 logger = structlog.get_logger()
 
 
-class CIFAR10Dataset(Dataset):
-    """Custom CIFAR-10 Dataset class for loading and preprocessing CIFAR-10 data."""
+class MNISTDataset(Dataset):
+    """Custom MNIST Dataset class for loading and preprocessing MNIST data."""
     
     def __init__(self, data_dir: str, train: bool = True, transform: Optional[transforms.Compose] = None):
         """
-        Initialize CIFAR-10 dataset.
+        Initialize MNIST dataset.
         
         Args:
-            data_dir: Directory containing the CIFAR-10 data
+            data_dir: Directory containing the MNIST data
             train: Whether to load training or test data
             transform: Optional transforms to apply to the data
         """
@@ -33,38 +33,31 @@ class CIFAR10Dataset(Dataset):
         self.train = train
         self.transform = transform or self._get_default_transforms(train)
         
-        # Load CIFAR-10 dataset
-        self.dataset = datasets.CIFAR10(
+        # Load MNIST dataset
+        self.dataset = datasets.MNIST(
             root=data_dir,
             train=train,
             download=True,
             transform=self.transform
         )
         
-        # CIFAR-10 class names
-        self.classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 
-                       'dog', 'frog', 'horse', 'ship', 'truck']
-        
-        logger.info(f"Loaded CIFAR-10 dataset", 
+        logger.info(f"Loaded MNIST dataset", 
                    split="train" if train else "test",
-                   size=len(self.dataset),
-                   classes=len(self.classes))
+                   size=len(self.dataset))
     
     def _get_default_transforms(self, train: bool) -> transforms.Compose:
-        """Get default transforms for CIFAR-10 data."""
+        """Get default transforms for MNIST data."""
         if train:
             return transforms.Compose([
-                transforms.RandomCrop(32, padding=4),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomRotation(degrees=10),
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+                transforms.RandomRotation(10),
+                transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
                 transforms.ToTensor(),
-                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+                transforms.Normalize((0.1307,), (0.3081,))
             ])
         else:
             return transforms.Compose([
                 transforms.ToTensor(),
-                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+                transforms.Normalize((0.1307,), (0.3081,))
             ])
     
     def __len__(self) -> int:
@@ -79,10 +72,6 @@ class CIFAR10Dataset(Dataset):
         for _, label in self.dataset:
             class_counts[label] = class_counts.get(label, 0) + 1
         return class_counts
-    
-    def get_class_names(self) -> Dict[int, str]:
-        """Get mapping from class indices to class names."""
-        return {i: name for i, name in enumerate(self.classes)}
 
 
 class DataManager:
@@ -118,7 +107,7 @@ class DataManager:
             Tuple of (train_loader, val_loader, test_loader)
         """
         # Load full training dataset
-        full_train_dataset = CIFAR10Dataset(self.data_dir, train=True)
+        full_train_dataset = MNISTDataset(self.data_dir, train=True)
         
         # Calculate split sizes
         total_size = len(full_train_dataset)
@@ -166,7 +155,7 @@ class DataManager:
     
     def get_test_loader(self, batch_size: int) -> DataLoader:
         """Get test data loader using the official test set."""
-        test_dataset = CIFAR10Dataset(self.data_dir, train=False)
+        test_dataset = MNISTDataset(self.data_dir, train=False)
         return DataLoader(
             test_dataset,
             batch_size=batch_size,
@@ -177,26 +166,20 @@ class DataManager:
     
     def save_data_info(self, output_path: str):
         """Save dataset information and statistics."""
-        train_dataset = CIFAR10Dataset(self.data_dir, train=True)
-        test_dataset = CIFAR10Dataset(self.data_dir, train=False)
+        train_dataset = MNISTDataset(self.data_dir, train=True)
+        test_dataset = MNISTDataset(self.data_dir, train=False)
         
         data_info = {
             "train_size": len(train_dataset),
             "test_size": len(test_dataset),
             "num_classes": 10,
-            "image_size": [32, 32],
-            "channels": 3,
-            "class_names": train_dataset.get_class_names(),
+            "image_size": [28, 28],
             "train_class_distribution": train_dataset.get_class_distribution(),
             "test_class_distribution": test_dataset.get_class_distribution(),
             "splits": {
                 "train": self.train_split,
                 "val": self.val_split,
                 "test": self.test_split
-            },
-            "normalization": {
-                "mean": [0.4914, 0.4822, 0.4465],
-                "std": [0.2023, 0.1994, 0.2010]
             }
         }
         
@@ -205,22 +188,4 @@ class DataManager:
             json.dump(data_info, f, indent=2)
         
         logger.info("Saved data information", output_path=output_path)
-        return data_info
-    
-    def get_sample_batch(self, batch_size: int = 8) -> Tuple[torch.Tensor, torch.Tensor, Dict[int, str]]:
-        """
-        Get a sample batch for visualization or testing.
-        
-        Args:
-            batch_size: Number of samples to return
-            
-        Returns:
-            Tuple of (images, labels, class_names)
-        """
-        dataset = CIFAR10Dataset(self.data_dir, train=True)
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        
-        images, labels = next(iter(loader))
-        class_names = dataset.get_class_names()
-        
-        return images, labels, class_names
+        return data_info 

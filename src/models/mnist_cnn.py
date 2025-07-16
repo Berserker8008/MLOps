@@ -1,7 +1,7 @@
 """
-CIFAR-10 ResNet Model
+MNIST CNN Model
 
-This module contains the ResNet architecture for CIFAR-10 image classification.
+This module contains the CNN architecture for MNIST digit classification.
 """
 
 import torch
@@ -13,110 +13,80 @@ import structlog
 logger = structlog.get_logger()
 
 
-class BasicBlock(nn.Module):
-    """Basic residual block for ResNet."""
-    
-    expansion = 1
-    
-    def __init__(self, in_planes, planes, stride=1):
-        super(BasicBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
-        
-        self.shortcut = nn.Sequential()
-        if stride != 1 or in_planes != self.expansion * planes:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(self.expansion * planes)
-            )
-    
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
-        out = F.relu(out)
-        return out
-
-
-class CIFAR10ResNet(nn.Module):
-    """ResNet architecture for CIFAR-10 classification."""
+class MNISTCNN(nn.Module):
+    """Convolutional Neural Network for MNIST digit classification."""
     
     def __init__(self, config: Dict[str, Any]):
         """
-        Initialize the ResNet model.
+        Initialize the CNN model.
         
         Args:
             config: Model configuration dictionary
         """
-        super(CIFAR10ResNet, self).__init__()
+        super(MNISTCNN, self).__init__()
         
-        self.input_size = config.get('input_size', [32, 32])
+        self.input_size = config.get('input_size', [28, 28])
         self.num_classes = config.get('num_classes', 10)
         self.dropout_rate = config.get('dropout_rate', 0.2)
         
-        # ResNet configuration
-        num_blocks = config.get('num_blocks', [2, 2, 2, 2])  # ResNet-18 style
+        # Convolutional layers
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
         
-        self.in_planes = 64
+        # Batch normalization layers
+        self.bn1 = nn.BatchNorm2d(32)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.bn3 = nn.BatchNorm2d(128)
         
-        # Initial convolution
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
+        # Pooling layer
+        self.pool = nn.MaxPool2d(2, 2)
         
-        # Residual layers
-        self.layer1 = self._make_layer(BasicBlock, 64, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(BasicBlock, 128, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(BasicBlock, 256, num_blocks[2], stride=2)
-        self.layer4 = self._make_layer(BasicBlock, 512, num_blocks[3], stride=2)
-        
-        # Global average pooling and classifier
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        # Dropout layer
         self.dropout = nn.Dropout(self.dropout_rate)
-        self.fc = nn.Linear(512 * BasicBlock.expansion, self.num_classes)
         
-        logger.info("Initialized CIFAR-10 ResNet model",
+        # Calculate the size after convolutions and pooling
+        # Input: 28x28 -> After 3 conv layers and 2 pooling: 7x7
+        conv_output_size = 3 * 3 * 128
+        
+        # Fully connected layers
+        self.fc1 = nn.Linear(conv_output_size, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, self.num_classes)
+        
+        logger.info("Initialized MNIST CNN model",
                    input_size=self.input_size,
                    num_classes=self.num_classes,
-                   dropout_rate=self.dropout_rate,
-                   num_blocks=num_blocks)
-    
-    def _make_layer(self, block, planes, num_blocks, stride):
-        """Create a residual layer."""
-        strides = [stride] + [1] * (num_blocks - 1)
-        layers = []
-        for stride in strides:
-            layers.append(block(self.in_planes, planes, stride))
-            self.in_planes = planes * block.expansion
-        return nn.Sequential(*layers)
+                   dropout_rate=self.dropout_rate)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass through the network.
         
         Args:
-            x: Input tensor of shape (batch_size, 3, 32, 32)
+            x: Input tensor of shape (batch_size, 1, 28, 28)
             
         Returns:
             Output tensor of shape (batch_size, num_classes)
         """
-        # Initial convolution
-        x = F.relu(self.bn1(self.conv1(x)))
+        # First convolutional block
+        x = self.pool(F.relu(self.bn1(self.conv1(x))))
         
-        # Residual layers
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+        # Second convolutional block
+        x = self.pool(F.relu(self.bn2(self.conv2(x))))
         
-        # Global average pooling
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
+        # Third convolutional block
+        x = self.pool(F.relu(self.bn3(self.conv3(x))))
         
-        # Dropout and classifier
+        # Flatten the output
+        x = x.view(x.size(0), -1)
+        
+        # Fully connected layers
+        x = F.relu(self.fc1(x))
         x = self.dropout(x)
-        x = self.fc(x)
+        x = F.relu(self.fc2(x))
+        x = self.dropout(x)
+        x = self.fc3(x)
         
         return x
     
@@ -124,22 +94,22 @@ class CIFAR10ResNet(nn.Module):
         """Get model information and statistics."""
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-
+        
         return {
-            "model_name": "CIFAR10ResNet",
+            "model_name": "MNISTCNN",
             "input_size": self.input_size,
-            "num_classes": int(self.num_classes),
-            "dropout_rate": float(self.dropout_rate),
-            "total_parameters": int(total_params),
-            "trainable_parameters": int(trainable_params),
-            "architecture": "ResNet"
+            "num_classes": self.num_classes,
+            "dropout_rate": self.dropout_rate,
+            "total_parameters": total_params,
+            "trainable_parameters": trainable_params,
+            "architecture": "CNN"
         }
 
 
-class CIFAR10Trainer:
-    """Trainer class for CIFAR-10 ResNet model."""
+class MNISTTrainer:
+    """Trainer class for MNIST CNN model."""
     
-    def __init__(self, model: CIFAR10ResNet, config: Dict[str, Any], device: str = "cpu"):
+    def __init__(self, model: MNISTCNN, config: Dict[str, Any], device: str = "cpu"):
         """
         Initialize the trainer.
         
@@ -155,22 +125,11 @@ class CIFAR10Trainer:
         # Setup optimizer
         optimizer_name = config.get('optimizer', 'adam').lower()
         learning_rate = config.get('learning_rate', 0.001)
-        weight_decay = config.get('weight_decay', 1e-4)
         
         if optimizer_name == 'adam':
-            self.optimizer = torch.optim.Adam(
-                self.model.parameters(), 
-                lr=learning_rate, 
-                weight_decay=weight_decay
-            )
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
         elif optimizer_name == 'sgd':
-            momentum = config.get('momentum', 0.9)
-            self.optimizer = torch.optim.SGD(
-                self.model.parameters(), 
-                lr=learning_rate, 
-                momentum=momentum,
-                weight_decay=weight_decay
-            )
+            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate)
         else:
             raise ValueError(f"Unsupported optimizer: {optimizer_name}")
         
@@ -182,14 +141,9 @@ class CIFAR10Trainer:
             raise ValueError(f"Unsupported loss function: {loss_function}")
         
         # Setup scheduler
-        scheduler_name = config.get('scheduler', 'cosine')
-        if scheduler_name == 'cosine':
-            T_max = config.get('scheduler_t_max', 200)
-            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=T_max
-            )
-        elif scheduler_name == 'step':
-            step_size = config.get('scheduler_step_size', 50)
+        scheduler_name = config.get('scheduler', 'step')
+        if scheduler_name == 'step':
+            step_size = config.get('scheduler_step_size', 7)
             gamma = config.get('scheduler_gamma', 0.1)
             self.scheduler = torch.optim.lr_scheduler.StepLR(
                 self.optimizer, step_size=step_size, gamma=gamma
@@ -301,4 +255,4 @@ class CIFAR10Trainer:
         checkpoint = torch.load(path, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        logger.info("Loaded model", path=path)
+        logger.info("Loaded model", path=path) 
