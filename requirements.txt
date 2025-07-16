@@ -56,3 +56,6 @@ docker>=6.0.0
 # Utilities
 tqdm>=4.65.0
 click>=8.0.0 
+
+lark
+json_tricks
