@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Train MNIST CNN model with MLflow experiment tracking.
+Train CIFAR-10 CNN model with MLflow experiment tracking.
 
-This script trains a CNN model on the MNIST dataset and tracks experiments with MLflow.
+This script trains a CNN model on the CIFAR-10 dataset and tracks experiments with MLflow.
 """
 
 import os
@@ -22,8 +22,8 @@ from json_tricks import dump
 # Add src to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from data.dataset import DataManager
-from models.mnist_cnn import MNISTCNN, MNISTTrainer
+from data.cifar_dataset import CIFAR10DataManager
+from models.cifar_cnn import CIFAR10CNN, CIFAR10Trainer
 from utils.metrics import ModelEvaluator
 
 # Configure logging
@@ -54,10 +54,10 @@ def load_config(config_path: str) -> dict:
     return config
 
 
-def train_model(config: dict, data_dir: str = "data/mnist", 
+def train_model(config: dict, data_dir: str = "data/cifar10", 
                 models_dir: str = "models", device: str = "cpu"):
     """
-    Train the MNIST CNN model.
+    Train the CIFAR-10 CNN model.
     
     Args:
         config: Training configuration
@@ -74,16 +74,25 @@ def train_model(config: dict, data_dir: str = "data/mnist",
     
     with mlflow.start_run():
         # Log parameters
-        mlflow.log_params({
+        training_params = {
             "learning_rate": config['training']['learning_rate'],
             "batch_size": config['training']['batch_size'],
             "epochs": config['training']['epochs'],
             "optimizer": config['training']['optimizer'],
-            "dropout_rate": config['model']['dropout_rate']
-        })
+            "dropout_rate": config['model']['dropout_rate'],
+            "weight_decay": config['training']['weight_decay'],
+            "scheduler": config['training']['scheduler'],
+            "early_stopping_patience": config['validation']['early_stopping_patience']
+        }
+        
+        # Log hyperparameters
+        hyperparams = config.get('hyperparameters', {})
+        all_params = {**training_params, **hyperparams}
+        
+        mlflow.log_params(all_params)
         
         # Create data manager
-        data_manager = DataManager(data_dir, config['data'])
+        data_manager = CIFAR10DataManager(data_dir, config['data'])
         
         # Create data loaders
         train_loader, val_loader, test_loader = data_manager.create_data_loaders(
@@ -91,10 +100,18 @@ def train_model(config: dict, data_dir: str = "data/mnist",
         )
         
         # Create model
-        model = MNISTCNN(config['model'])
+        model = CIFAR10CNN(config['model'])
         
         # Create trainer
-        trainer = MNISTTrainer(model, config['training'], device=device)
+        trainer = CIFAR10Trainer(model, config['training'], device=device)
+        
+        # Log model architecture info
+        model_info = model.get_model_info()
+        mlflow.log_params({
+            "total_parameters": model_info['total_parameters'],
+            "trainable_parameters": model_info['trainable_parameters'],
+            "model_name": model_info['model_name']
+        })
         
         # Training loop
         best_val_accuracy = 0.0
@@ -103,7 +120,8 @@ def train_model(config: dict, data_dir: str = "data/mnist",
         
         logger.info("Starting training", 
                    epochs=config['training']['epochs'],
-                   device=device)
+                   device=device,
+                   model_params=model_info['total_parameters'])
         
         for epoch in range(config['training']['epochs']):
             # Train epoch
@@ -112,7 +130,7 @@ def train_model(config: dict, data_dir: str = "data/mnist",
             # Validate
             val_metrics = trainer.validate(val_loader)
             
-            # Log metrics
+            # Log metrics to MLflow
             mlflow.log_metrics({
                 f"train_loss": train_metrics['loss'],
                 f"train_accuracy": train_metrics['accuracy'],
@@ -121,11 +139,18 @@ def train_model(config: dict, data_dir: str = "data/mnist",
                 f"learning_rate": train_metrics['learning_rate']
             }, step=epoch)
             
+            # Log additional metrics
+            mlflow.log_metrics({
+                f"epoch": epoch + 1,
+                f"early_stopping_counter": early_stopping_counter
+            }, step=epoch)
+            
             logger.info(f"Epoch {epoch + 1}/{config['training']['epochs']}",
                        train_loss=train_metrics['loss'],
                        train_accuracy=train_metrics['accuracy'],
                        val_loss=val_metrics['loss'],
-                       val_accuracy=val_metrics['accuracy'])
+                       val_accuracy=val_metrics['accuracy'],
+                       lr=train_metrics['learning_rate'])
             
             # Save best model
             if val_metrics['accuracy'] > best_val_accuracy:
@@ -134,7 +159,7 @@ def train_model(config: dict, data_dir: str = "data/mnist",
                 trainer.save_model(best_model_path)
                 
                 # Log model artifact
-                mlflow.log_artifact(best_model_path)
+                mlflow.log_artifact(best_model_path, "models")
                 
                 early_stopping_counter = 0
                 logger.info("New best model saved", 
@@ -155,73 +180,94 @@ def train_model(config: dict, data_dir: str = "data/mnist",
         evaluator = ModelEvaluator(model, device=device)
         test_results = evaluator.evaluate_model(test_loader)
         
-        # Log test metrics
+        # Log test metrics (accuracy now consistently in percentage format)
         test_metrics = test_results['metrics']
+        
         mlflow.log_metrics({
             "test_accuracy": test_metrics['accuracy'],
+            "test_loss": test_metrics['loss'],
             "test_precision_macro": test_metrics['precision_macro'],
             "test_recall_macro": test_metrics['recall_macro'],
             "test_f1_macro": test_metrics['f1_macro']
         })
         
+        # Log per-class metrics
+        for i in range(10):
+            mlflow.log_metrics({
+                f"test_precision_class_{i}": test_metrics.get(f'precision_class_{i}', 0),
+                f"test_recall_class_{i}": test_metrics.get(f'recall_class_{i}', 0),
+                f"test_f1_class_{i}": test_metrics.get(f'f1_class_{i}', 0)
+            })
+        
         # Save final model
         final_model_path = os.path.join(models_dir, "final_model.pth")
         trainer.save_model(final_model_path)
-        mlflow.log_artifact(final_model_path)
+        mlflow.log_artifact(final_model_path, "models")
         
         # Save metrics
         metrics_path = os.path.join(models_dir, "metrics.json")
         with open(metrics_path, 'w') as f:
             json.dump(convert_numpy(test_metrics), f, indent=2)
-        mlflow.log_artifact(metrics_path)
+        mlflow.log_artifact(metrics_path, "metrics")
         
         # Log model info
-        model_info = model.get_model_info()
         model_info_path = os.path.join(models_dir, "model_info.json")
         with open(model_info_path, 'w') as f:
             dump(model_info, f, indent=2)
-        mlflow.log_artifact(model_info_path)
+        mlflow.log_artifact(model_info_path, "model_info")
+        
+        # Log class distribution
+        class_dist_path = os.path.join(models_dir, "class_distribution.json")
+        with open(class_dist_path, 'w') as f:
+            json.dump(convert_numpy(test_results['class_distribution']), f, indent=2)
+        mlflow.log_artifact(class_dist_path, "analysis")
         
         logger.info("Training completed",
                    best_val_accuracy=best_val_accuracy,
-                   test_accuracy=test_metrics['accuracy'])
+                   test_accuracy=test_metrics['accuracy'],
+                   test_f1_macro=test_metrics['f1_macro'])
         
         return {
             'best_val_accuracy': best_val_accuracy,
             'test_metrics': test_metrics,
-            'model_info': model_info
+            'model_info': model_info,
+            'class_distribution': test_results['class_distribution']
         }
 
 
 def convert_numpy(obj):
+    """Convert numpy types to Python types for JSON serialization."""
     if isinstance(obj, dict):
-        return {k: convert_numpy(v) for k, v in obj.items()}
+        # Convert both keys and values to handle numpy types in dictionary keys
+        return {convert_numpy(k): convert_numpy(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [convert_numpy(i) for i in obj]
     elif isinstance(obj, tuple):
         return tuple(convert_numpy(i) for i in obj)
     elif isinstance(obj, set):
         return list(convert_numpy(i) for i in obj)
-    elif isinstance(obj, (np.integer,)):
+    elif isinstance(obj, (np.integer, np.int32, np.int64)):
         return int(obj)
-    elif isinstance(obj, (np.floating,)):
+    elif isinstance(obj, (np.floating, np.float32, np.float64)):
         return float(obj)
     elif isinstance(obj, (np.ndarray,)):
         return obj.tolist()
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
     else:
         return obj
 
 
 def main():
     """Main function."""
-    parser = argparse.ArgumentParser(description="Train MNIST CNN model")
+    parser = argparse.ArgumentParser(description="Train CIFAR-10 CNN model")
     parser.add_argument("--config", default="configs/training.yaml",
                        help="Path to training configuration file")
-    parser.add_argument("--data-dir", default="data/mnist",
+    parser.add_argument("--data-dir", default="data/cifar10",
                        help="Directory containing the data")
     parser.add_argument("--models-dir", default="models",
                        help="Directory to save models")
-    parser.add_argument("--device", default="cpu",
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu",
                        help="Device to train on ('cpu' or 'cuda')")
     parser.add_argument("--learning-rate", type=float, default=None,
                        help="Override learning rate")
@@ -256,11 +302,18 @@ def main():
     try:
         results = train_model(config, args.data_dir, args.models_dir, args.device)
         
-        print(f"✅ Training completed successfully!")
+        print(f"✅ CIFAR-10 training completed successfully!")
         print(f"🏆 Best validation accuracy: {results['best_val_accuracy']:.2f}%")
         print(f"📊 Test accuracy: {results['test_metrics']['accuracy']:.2f}%")
+        print(f"📊 Test F1-macro: {results['test_metrics']['f1_macro']:.4f}")
+        print(f"🔢 Model parameters: {results['model_info']['total_parameters']:,}")
         print(f"📁 Models saved to: {args.models_dir}")
         print(f"🔗 MLflow experiment: {config['experiment']['name']}")
+        
+        # Print class distribution
+        print(f"\n📊 Test set class distribution:")
+        for class_idx, count in results['class_distribution'].items():
+            print(f"   Class {class_idx}: {count} samples")
         
     except Exception as e:
         logger.error("Training failed", error=str(e))
@@ -268,4 +321,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()

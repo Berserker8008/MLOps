@@ -1,45 +1,59 @@
-# Training Configuration
-model:
-  name: "mnist_cnn"
-  architecture: "cnn"
-  input_size: [28, 28]
-  num_classes: 10
-  dropout_rate: 0.2
+# CIFAR-10 Training Configuration
+# This configuration file contains all parameters for training the CIFAR-10 CNN model
 
-training:
-  batch_size: 64
-  learning_rate: 0.001
-  epochs: 10
-  optimizer: "adam"
-  loss_function: "cross_entropy"
-  scheduler: "step"
-  scheduler_step_size: 7
-  scheduler_gamma: 0.1
-
+# Data configuration
 data:
   train_split: 0.8
   val_split: 0.1
   test_split: 0.1
-  data_dir: "data/processed"
-  augmentations:
-    rotation: 10
-    horizontal_flip: false
-    vertical_flip: false
-    brightness: 0.1
-    contrast: 0.1
 
-experiment:
-  name: "mnist_classification"
-  tracking_uri: "http://localhost:5000"
-  log_artifacts: true
-  log_metrics: true
+# Model configuration
+model:
+  input_size: [32, 32, 3]
+  num_classes: 10
+  dropout_rate: 0.3
 
-evaluation:
-  metrics: ["accuracy", "precision", "recall", "f1"]
-  save_predictions: true
-  confusion_matrix: true
+# Training configuration
+training:
+  batch_size: 128
+  epochs: 10
+  learning_rate: 0.001
+  weight_decay: 0.1
+  optimizer: "adamw"  # adam, sgd, adamw
+  momentum: 0.9  # for SGD
+  loss_function: "cross_entropy"
+  
+  # Learning rate scheduler
+  scheduler: "cosine_annealing"  # step, cosine_annealing, reduce_on_plateau
+  scheduler_step_size: 30  # for step scheduler
+  scheduler_gamma: 0.1  # for step scheduler
+  scheduler_T_max: 200  # for cosine annealing (should match epochs)
+  scheduler_eta_min: 0.00001  # for cosine annealing
+  scheduler_patience: 10  # for reduce_on_plateau
+  scheduler_factor: 0.5  # for reduce_on_plateau
 
+# Validation configuration
 validation:
-  threshold_accuracy: 0.95
-  threshold_loss: 0.1
-  early_stopping_patience: 5 
+  early_stopping_patience: 25
+  threshold_accuracy: 75.0  # Minimum accuracy threshold (%)
+  threshold_loss: 1.0  # Maximum loss threshold
+
+# Experiment configuration
+experiment:
+  name: "cifar10_classification"
+  tracking_uri: "http://localhost:5000"
+  
+# Additional hyperparameters for MLflow tracking
+hyperparameters:
+  data_augmentation: true
+  batch_normalization: true
+  weight_initialization: "xavier"
+  gradient_clipping: null
+  mixed_precision: false
+  
+# Hardware configuration
+hardware:
+  device: "cuda"  # cpu, cuda
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true

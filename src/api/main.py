@@ -1,7 +1,7 @@
 """
-FastAPI Application for MNIST Model Inference
+FastAPI Application for CIFAR-10 Model Inference
 
-This module provides a REST API for MNIST digit classification with monitoring and validation.
+This module provides a REST API for CIFAR-10 image classification with monitoring and validation.
 """
 
 import os
@@ -22,7 +22,7 @@ import yaml
 # Import model components
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from models.mnist_cnn import MNISTCNN
+from models.cifar_cnn import CIFAR10CNN
 
 # Configure logging
 structlog.configure(
@@ -45,6 +45,12 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
+# CIFAR-10 class names
+CIFAR10_CLASSES = [
+    'airplane', 'automobile', 'bird', 'cat', 'deer',
+    'dog', 'frog', 'horse', 'ship', 'truck'
+]
+
 # Load configuration
 def load_config() -> Dict[str, Any]:
     """Load API configuration from YAML file."""
@@ -64,8 +70,8 @@ config = load_config()
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="MNIST Classification API",
-    description="A REST API for MNIST digit classification using CNN",
+    title="CIFAR-10 Classification API",
+    description="A REST API for CIFAR-10 image classification using CNN",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -93,13 +99,15 @@ model_info = None
 
 # Pydantic models for request/response
 class PredictionRequest(BaseModel):
-    image: List[List[float]] = Field(..., description="28x28 grayscale image as 2D array")
+    image: List[List[List[float]]] = Field(..., description="32x32x3 RGB image as 3D array")
     confidence_threshold: Optional[float] = Field(0.5, description="Minimum confidence threshold")
 
 class PredictionResponse(BaseModel):
-    prediction: int = Field(..., description="Predicted digit (0-9)")
+    prediction: int = Field(..., description="Predicted class (0-9)")
+    prediction_name: str = Field(..., description="Predicted class name")
     confidence: float = Field(..., description="Confidence score")
     probabilities: List[float] = Field(..., description="Class probabilities")
+    class_names: List[str] = Field(..., description="Class names")
     processing_time: float = Field(..., description="Processing time in seconds")
 
 class ModelInfo(BaseModel):
@@ -109,6 +117,7 @@ class ModelInfo(BaseModel):
     num_classes: int
     total_parameters: int
     device: str
+    class_names: List[str]
 
 class HealthResponse(BaseModel):
     status: str
@@ -132,7 +141,7 @@ def load_model():
         
         # Create model instance
         model_config = checkpoint.get('config', {}).get('model', {})
-        model = MNISTCNN(model_config)
+        model = CIFAR10CNN(model_config)
         model.load_state_dict(checkpoint['model_state_dict'])
         model.to(device)
         model.eval()
@@ -140,6 +149,7 @@ def load_model():
         # Get model info
         model_info = checkpoint.get('model_info', {})
         model_info['device'] = device
+        model_info['class_names'] = CIFAR10_CLASSES
         
         logger.info("Model loaded successfully", 
                    path=model_path, 
@@ -151,25 +161,30 @@ def load_model():
         logger.error("Failed to load model", error=str(e))
         return False
 
-def preprocess_image(image_data: List[List[float]]) -> torch.Tensor:
+def preprocess_image(image_data: List[List[List[float]]]) -> torch.Tensor:
     """Preprocess image data for model inference."""
     try:
         # Convert to numpy array
         image_array = np.array(image_data, dtype=np.float32)
         
-        # Ensure correct shape (28x28)
-        if image_array.shape != (28, 28):
-            raise ValueError(f"Expected image shape (28, 28), got {image_array.shape}")
+        # Ensure correct shape (32x32x3)
+        if image_array.shape != (32, 32, 3):
+            raise ValueError(f"Expected image shape (32, 32, 3), got {image_array.shape}")
         
         # Normalize to [0, 1] if not already
         if image_array.max() > 1.0:
             image_array = image_array / 255.0
         
-        # Apply MNIST normalization
-        image_array = (image_array - 0.1307) / 0.3081
+        # Convert to tensor and rearrange dimensions (H, W, C) -> (C, H, W)
+        tensor = torch.from_numpy(image_array).permute(2, 0, 1)
         
-        # Convert to tensor and add batch and channel dimensions
-        tensor = torch.from_numpy(image_array).unsqueeze(0).unsqueeze(0)
+        # Apply CIFAR-10 normalization
+        mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1)
+        std = torch.tensor([0.2470, 0.2435, 0.2616]).view(3, 1, 1)
+        tensor = (tensor - mean) / std
+        
+        # Add batch dimension
+        tensor = tensor.unsqueeze(0)
         
         return tensor
         
@@ -180,7 +195,7 @@ def preprocess_image(image_data: List[List[float]]) -> torch.Tensor:
 @app.on_event("startup")
 async def startup_event():
     """Initialize the application on startup."""
-    logger.info("Starting MNIST Classification API")
+    logger.info("Starting CIFAR-10 Classification API")
     
     # Load model
     if not load_model():
@@ -190,10 +205,12 @@ async def startup_event():
 async def root():
     """Root endpoint with API information."""
     return {
-        "message": "MNIST Classification API",
+        "message": "CIFAR-10 Classification API",
         "version": "1.0.0",
         "docs": "/docs",
-        "health": "/health"
+        "health": "/health",
+        "dataset": "CIFAR-10",
+        "classes": "10 classes: " + ", ".join(CIFAR10_CLASSES)
     }
 
 @app.get("/health", response_model=HealthResponse)
@@ -215,9 +232,17 @@ async def get_model_info():
     
     return ModelInfo(**model_info)
 
+@app.get("/classes")
+async def get_classes():
+    """Get CIFAR-10 class names and indices."""
+    return {
+        "classes": {i: name for i, name in enumerate(CIFAR10_CLASSES)},
+        "num_classes": len(CIFAR10_CLASSES)
+    }
+
 @app.post("/predict", response_model=PredictionResponse)
 async def predict(request: PredictionRequest):
-    """Make a prediction on an MNIST image."""
+    """Make a prediction on a CIFAR-10 image."""
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
     
@@ -255,13 +280,16 @@ async def predict(request: PredictionRequest):
         
         logger.info("Prediction made", 
                    prediction=prediction, 
+                   prediction_name=CIFAR10_CLASSES[prediction],
                    confidence=confidence,
                    processing_time=processing_time)
         
         return PredictionResponse(
             prediction=prediction,
+            prediction_name=CIFAR10_CLASSES[prediction],
             confidence=confidence,
             probabilities=probabilities,
+            class_names=CIFAR10_CLASSES,
             processing_time=processing_time
         )
         
@@ -271,7 +299,7 @@ async def predict(request: PredictionRequest):
 
 @app.post("/predict/batch")
 async def predict_batch(requests: List[PredictionRequest]):
-    """Make batch predictions on multiple MNIST images."""
+    """Make batch predictions on multiple CIFAR-10 images."""
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
     
@@ -298,6 +326,7 @@ async def predict_batch(requests: List[PredictionRequest]):
             results.append({
                 "index": i,
                 "prediction": prediction,
+                "prediction_name": CIFAR10_CLASSES[prediction],
                 "confidence": confidence,
                 "probabilities": probabilities
             })
@@ -311,7 +340,8 @@ async def predict_batch(requests: List[PredictionRequest]):
         return {
             "predictions": results,
             "batch_size": len(requests),
-            "processing_time": processing_time
+            "processing_time": processing_time,
+            "class_names": CIFAR10_CLASSES
         }
         
     except Exception as e:
@@ -364,4 +394,4 @@ if __name__ == "__main__":
         host=config["server"]["host"],
         port=config["server"]["port"],
         reload=config["server"].get("reload", False)
-    ) 
+    )
